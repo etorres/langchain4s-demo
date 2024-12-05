@@ -4,13 +4,13 @@ package accounts.infrastructure
 import accounts.application.OllamaTestConfig
 import accounts.domain.{AccountCommand, CreateAccountRequest}
 import accounts.infrastructure.OllamaChatbot.ChatbotError.{UnmetRequirements, UnsupportedCommand}
-import common.domain.{Country, Currency, Message, Requirement, SessionId}
+import common.domain.*
 import spec.OllamaSuite
 
 import cats.data.NonEmptyChain
 import cats.effect.IO
 import cats.effect.std.UUIDGen
-import cats.implicits.catsSyntaxEither
+import cats.implicits.{catsKernelOrderingForOrder, catsSyntaxEither}
 
 import scala.concurrent.duration.{Duration, DurationInt}
 
@@ -70,7 +70,12 @@ final class OllamaChatbotSuite extends OllamaSuite:
     runWith(_.help).assert(_.nonEmpty, "expected a non-empty response")
 
   test("should list possible actions"):
-    runWith(_.listActions).assert(_.nonEmpty, "expected a non-empty response")
+    runWith(testee =>
+      for
+        obtained <- testee.listActions
+        sortedObtained = obtained.map(_.sorted)
+      yield sortedObtained,
+    ).assertEquals(Right(AccountCommand.values.toList.sorted))
 
   private def runWith[T](testee: OllamaChatbot => IO[T]) = testResources.use(testee)
 

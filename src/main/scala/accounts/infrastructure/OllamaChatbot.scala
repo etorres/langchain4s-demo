@@ -6,6 +6,7 @@ import accounts.domain.{AccountCommand, CreateAccountRequest}
 import accounts.infrastructure.OllamaChatbot.ChatbotError.{UnmetRequirements, UnsupportedCommand}
 import accounts.infrastructure.OllamaChatbot.{
   ActionAiResponse,
+  ActionsAiResponse,
   Assistant,
   ChatbotError,
   CreateAccountAiResponse,
@@ -51,7 +52,7 @@ final class OllamaChatbot private (
   def commandFrom(
       message: Message,
       sessionId: SessionId,
-  ): IO[Either[? <: ChatbotError, AccountCommand]] = for
+  ): IO[Either[UnsupportedCommand, AccountCommand]] = for
     promptTemplate <- IO.delay {
       val queryEmbedding = embeddingModel.embed(message).content()
       val embeddingSearchResult = embeddingStore.search(
@@ -91,14 +92,14 @@ final class OllamaChatbot private (
     aiResponse <- IO.blocking(assistant.chat(sessionId, promptTemplate.text())).timeout(30.seconds)
     command = parse(aiResponse)
       .flatMap(_.as[ActionAiResponse])
-      .leftMap(_ => UnsupportedCommand)
+      .leftMap(error => UnsupportedCommand(error.getMessage))
       .map(_.accountCommand)
   yield command
 
   def createAccountRequestFrom(
       message: Message,
       sessionId: SessionId,
-  ): IO[Either[? <: ChatbotError, CreateAccountRequest]] = for
+  ): IO[Either[UnmetRequirements, CreateAccountRequest]] = for
     userMessage <- IO.pure(
       s"""Extract the country and currency mentioned in the text below. Give the country and
          |currency in the form of a JSON object following this structure:
@@ -115,29 +116,36 @@ final class OllamaChatbot private (
       case Right(value) => createAccountRequestFrom(value)
   yield createAccountRequest
 
-  private def createAccountRequestFrom(aiResponse: CreateAccountAiResponse) = (
-    Country.eitherNec(aiResponse.country.getOrElse("")),
-    Currency.eitherNec(aiResponse.currency.getOrElse("")),
-  ).parMapN(CreateAccountRequest.apply)
-    .leftMap(errors => UnmetRequirements(errors.map(Requirement.applyUnsafe)))
-
   def help: IO[Response] = generateWith(
     s"""{{document}}
        |Explain the above in 2-3 sentences:""".stripMargin,
   )
 
-  /** Not needed, can be computed from: [[es.eriktorr.langchain4s.accounts.domain.AccountCommand]].
+  /** Only for demo purposes. This is not needed, the list of supported actions can be computed
+    * from: [[es.eriktorr.langchain4s.accounts.domain.AccountCommand]].
     * @return
     *   The list of actions that can be performed by this agent.
     */
-  def listActions: IO[Response] = generateWith(
-    s"""Extract the actions you can perform from the document, delimited by ####.
-       |Please output the list of actions using <actions></actions>.
-       |Respond with "No actions found!" if no actions were found.
-       |####
-       |{{document}}
-       |####""".stripMargin,
-  )
+  def listActions: IO[Either[UnsupportedCommand, List[AccountCommand]]] = for
+    aiResponse <- generateWith(
+      s"""Extract the actions you can perform from the document, delimited by ####.
+         |Please output the list of actions using {"actions":[{"action":"do something"}]}.
+         |Respond with "No actions found!" if no actions were found.
+         |####
+         |{{document}}
+         |####""".stripMargin,
+    )
+    actions = parse(aiResponse)
+      .flatMap(_.as[ActionsAiResponse])
+      .leftMap(error => UnsupportedCommand(error.getMessage))
+      .map(_.actions.map(_.accountCommand))
+  yield actions
+
+  private def createAccountRequestFrom(aiResponse: CreateAccountAiResponse) = (
+    Country.eitherNec(aiResponse.country.getOrElse("")),
+    Currency.eitherNec(aiResponse.currency.getOrElse("")),
+  ).parMapN(CreateAccountRequest.apply)
+    .leftMap(errors => UnmetRequirements(errors.map(Requirement.applyUnsafe)))
 
   private def generateWith(template: String) = for
     document <- IO.delay(
@@ -200,6 +208,12 @@ object OllamaChatbot:
   private trait Assistant:
     def chat(@MemoryId sessionId: String, @UserMessage message: String): String
 
+  final private case class ActionsAiResponse(actions: List[ActionAiResponse])
+
+  private object ActionsAiResponse:
+    given Decoder[ActionsAiResponse] = (cursor: HCursor) =>
+      cursor.downField("actions").as[List[ActionAiResponse]].map(ActionsAiResponse.apply)
+
   final private case class ActionAiResponse(accountCommand: AccountCommand)
 
   private object ActionAiResponse:
@@ -225,7 +239,7 @@ object OllamaChatbot:
   sealed abstract class ChatbotError(message: String) extends HandledError(message)
 
   object ChatbotError:
-    case object UnsupportedCommand extends ChatbotError("Unsupported command")
+    final case class UnsupportedCommand(message: String) extends ChatbotError(message)
 
     final case class UnmetRequirements(requirements: NonEmptyChain[Requirement])
         extends ChatbotError("Unmet requirements")

@@ -11,13 +11,13 @@ object Constraints:
   type CountryCode =
     DescribedAs[
       ForAll[Letter & UpperCase] & FixedLength[2],
-      "The country must be 2 uppercase characters",
+      "The country should be 2 uppercase characters",
     ]
 
   type CurrencyCode =
     DescribedAs[
       ForAll[Letter & UpperCase] & FixedLength[3],
-      "The currency must be 3 uppercase characters",
+      "The currency should be 3 uppercase characters",
     ]
 
   type NonEmptyString =

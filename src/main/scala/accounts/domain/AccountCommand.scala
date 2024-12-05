@@ -1,6 +1,7 @@
 package es.eriktorr.langchain4s
 package accounts.domain
 
+import cats.Order
 import io.circe.Decoder
 
 enum AccountCommand(val description: String):
@@ -14,3 +15,5 @@ object AccountCommand:
       case Some(accountCommand) => Right(accountCommand)
       case None => Left(s"Unsupported command found: $value"),
   )
+
+  given Order[AccountCommand] = Order.by(_.description)

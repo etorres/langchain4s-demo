@@ -7,19 +7,25 @@ import common.domain.{Message, Response, SessionId}
 
 import cats.effect.IO
 import cats.effect.std.UUIDGen
+import org.typelevel.log4cats.Logger
 
 final class AccountsAgent(accountsService: AccountsService, ollamaChatbot: OllamaChatbot)(using
-    UUIDGen[IO],
+    logger: Logger[IO],
+    uuidGen: UUIDGen[IO],
 ):
   def run(message: Message): IO[Response] = for
-    uuid <- UUIDGen.randomUUID
+    uuid <- uuidGen.randomUUID
     sessionId <- IO.fromEither(SessionId.either(uuid))
     commandOrError <- ollamaChatbot.commandFrom(message, sessionId)
     response <- commandOrError match
       case Left(error) =>
-        error match
-          case ChatbotError.UnsupportedCommand => ollamaChatbot.listActions
-          case other => IO.raiseError(other)
+        logger
+          .warn(error)("Command not found")
+          .map(_ =>
+            Response.applyUnsafe(
+              s"The following actions are supported: ${AccountCommand.values.toList.map(_.description).mkString(", ")}",
+            ),
+          )
       case Right(command) =>
         command match
           case AccountCommand.CreateAccount =>
@@ -27,10 +33,9 @@ final class AccountsAgent(accountsService: AccountsService, ollamaChatbot: Ollam
               requestOrError <- ollamaChatbot.createAccountRequestFrom(message, sessionId)
               response <- requestOrError match
                 case Left(error) =>
-                  error match
-                    case ChatbotError.UnmetRequirements(_) =>
-                      IO.raiseError(IllegalArgumentException("Not implemented")) // TODO
-                    case other => IO.raiseError(other)
+                  logger.warn(error)("Arguments not found") *> IO.raiseError(
+                    IllegalArgumentException("Not implemented"), // TODO
+                  )
                 case Right(request) =>
                   for
                     account <- accountsService.createAccount(request)
